@@ -1,3 +1,4 @@
+use clap::Parser;
 use rand::Rng;
 use sha1::{Digest, Sha1};
 use std::io::SeekFrom;
@@ -9,6 +10,20 @@ use tracker::{TrackerEvent, TrackerRequest, get_tracker_client};
 
 mod peer;
 use peer::{Message, PeerConnection};
+mod storage;
+use storage::Storage;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to the torrent file
+    #[arg(short, long, default_value = "example.torrent")]
+    torrent: String,
+
+    /// Output directory for downloaded files
+    #[arg(short, long)]
+    output: Option<String>,
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum PieceStatus {
@@ -19,7 +34,18 @@ enum PieceStatus {
 
 #[tokio::main]
 async fn main() {
-    let torrent = match parse_torrent("example.torrent") {
+    let args = Args::parse();
+
+    let storage = match Storage::new(args.output).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to initialize storage: {}", e);
+            return;
+        }
+    };
+    println!("Download directory: {}", storage.get_download_dir_str());
+
+    let torrent = match parse_torrent(&args.torrent) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Error parsing torrent: {}", e);
@@ -119,9 +145,9 @@ async fn main() {
 
     let file_path = if torrent.length.is_none() {
         println!("Multi-file torrents not fully supported yet, writing to 'output.bin'");
-        "output.bin".to_string()
+        storage.get_file_path("output.bin")
     } else {
-        torrent.name.clone()
+        storage.get_file_path(&torrent.name)
     };
 
     let file = tokio::fs::File::create(&file_path).await.unwrap();
@@ -252,14 +278,22 @@ async fn main() {
                             break;
                         }
 
-                        for (i, s) in status.iter_mut().enumerate() {
+                        let mut available_pieces = Vec::new();
+                        for (i, s) in status.iter().enumerate() {
                             if *s == PieceStatus::Missing {
                                 if peer.has_piece(i as u32) {
-                                    *s = PieceStatus::InProgress;
-                                    idx = Some(i);
-                                    break;
+                                    available_pieces.push(i);
                                 }
                             }
+                        }
+
+                        if !available_pieces.is_empty() {
+                            use rand::Rng;
+                            let mut rng = rand::rng();
+                            let random_idx = rng.random_range(0..available_pieces.len());
+                            let i = available_pieces[random_idx];
+                            status[i] = PieceStatus::InProgress;
+                            idx = Some(i);
                         }
                     }
 
