@@ -1,0 +1,188 @@
+use std::net::SocketAddrV4;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+#[derive(Debug)]
+pub enum Message {
+    KeepAlive,
+    Choke,
+    Unchoke,
+    Interested,
+    NotInterested,
+    Have(u32),
+    Bitfield(Vec<u8>),
+    Request {
+        index: u32,
+        begin: u32,
+        length: u32,
+    },
+    Piece {
+        index: u32,
+        begin: u32,
+        block: Vec<u8>,
+    },
+    Cancel {
+        index: u32,
+        begin: u32,
+        length: u32,
+    },
+}
+
+pub struct PeerConnection {
+    addr: SocketAddrV4,
+    stream: TcpStream,
+    pub peer_id: [u8; 20],
+    pub peer_choking: bool,
+    pub peer_interested: bool,
+    pub am_choking: bool,
+    pub am_interested: bool,
+    pub bitfield: Vec<u8>,
+}
+
+impl PeerConnection {
+    pub async fn connect(
+        addr: SocketAddrV4,
+        info_hash: &[u8; 20],
+        client_id: &[u8; 20],
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut stream =
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
+
+        // Handshake
+        let mut handshake = Vec::new();
+        handshake.push(19);
+        handshake.extend_from_slice(b"BitTorrent protocol");
+        handshake.extend_from_slice(&[0u8; 8]); // Reserved
+        handshake.extend_from_slice(info_hash);
+        handshake.extend_from_slice(client_id);
+
+        stream.write_all(&handshake).await?;
+
+        let mut response = vec![0u8; 68];
+        stream.read_exact(&mut response).await?;
+
+        if response[0] != 19 || &response[1..20] != b"BitTorrent protocol" {
+            return Err("Invalid handshake".into());
+        }
+
+        if &response[28..48] != info_hash {
+            return Err("Info hash mismatch".into());
+        }
+
+        let mut peer_id = [0u8; 20];
+        peer_id.copy_from_slice(&response[48..68]);
+
+        Ok(Self {
+            addr,
+            stream,
+            peer_id,
+            peer_choking: true,
+            peer_interested: false,
+            am_choking: true,
+            am_interested: false,
+            bitfield: Vec::new(),
+        })
+    }
+
+    pub async fn send_message(
+        &mut self,
+        msg: Message,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match msg {
+            Message::KeepAlive => {
+                self.stream.write_u32(0).await?;
+            }
+            Message::Choke => {
+                self.stream.write_u32(1).await?;
+                self.stream.write_u8(0).await?;
+            }
+            Message::Unchoke => {
+                self.stream.write_u32(1).await?;
+                self.stream.write_u8(1).await?;
+            }
+            Message::Interested => {
+                self.stream.write_u32(1).await?;
+                self.stream.write_u8(2).await?;
+            }
+            Message::NotInterested => {
+                self.stream.write_u32(1).await?;
+                self.stream.write_u8(3).await?;
+            }
+            Message::Have(index) => {
+                self.stream.write_u32(5).await?;
+                self.stream.write_u8(4).await?;
+                self.stream.write_u32(index).await?;
+            }
+            Message::Request {
+                index,
+                begin,
+                length,
+            } => {
+                self.stream.write_u32(13).await?;
+                self.stream.write_u8(6).await?;
+                self.stream.write_u32(index).await?;
+                self.stream.write_u32(begin).await?;
+                self.stream.write_u32(length).await?;
+            }
+            _ => {} // Implement others as needed
+        }
+        Ok(())
+    }
+
+    pub async fn read_message(
+        &mut self,
+    ) -> Result<Message, Box<dyn std::error::Error + Send + Sync>> {
+        let len = self.stream.read_u32().await?;
+        if len == 0 {
+            return Ok(Message::KeepAlive);
+        }
+
+        let id = self.stream.read_u8().await?;
+        match id {
+            0 => {
+                self.peer_choking = true;
+                Ok(Message::Choke)
+            }
+            1 => {
+                self.peer_choking = false;
+                Ok(Message::Unchoke)
+            }
+            2 => {
+                self.peer_interested = true;
+                Ok(Message::Interested)
+            }
+            3 => {
+                self.peer_interested = false;
+                Ok(Message::NotInterested)
+            }
+            4 => {
+                let index = self.stream.read_u32().await?;
+                Ok(Message::Have(index))
+            }
+            5 => {
+                let mut payload = vec![0u8; (len - 1) as usize];
+                self.stream.read_exact(&mut payload).await?;
+                self.bitfield = payload.clone();
+                Ok(Message::Bitfield(payload))
+            }
+            7 => {
+                let index = self.stream.read_u32().await?;
+                let begin = self.stream.read_u32().await?;
+                let mut block = vec![0u8; (len - 9) as usize];
+                self.stream.read_exact(&mut block).await?;
+                Ok(Message::Piece {
+                    index,
+                    begin,
+                    block,
+                })
+            }
+            _ => {
+                // Skip unknown message
+                let mut buf = vec![0u8; (len - 1) as usize];
+                self.stream.read_exact(&mut buf).await?;
+                Err(format!("Unknown message id: {}", id).into())
+            }
+        }
+    }
+}
