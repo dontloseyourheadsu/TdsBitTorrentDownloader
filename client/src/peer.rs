@@ -41,6 +41,16 @@ pub struct PeerConnection {
 }
 
 impl PeerConnection {
+    pub fn has_piece(&self, index: u32) -> bool {
+        let byte_index = (index / 8) as usize;
+        let bit_index = 7 - (index % 8);
+        if byte_index < self.bitfield.len() {
+            (self.bitfield[byte_index] >> bit_index) & 1 == 1
+        } else {
+            false
+        }
+    }
+
     pub async fn connect(
         addr: SocketAddrV4,
         info_hash: &[u8; 20],
@@ -158,6 +168,12 @@ impl PeerConnection {
             }
             4 => {
                 let index = self.stream.read_u32().await?;
+                let byte_index = (index / 8) as usize;
+                let bit_index = 7 - (index % 8);
+                if byte_index >= self.bitfield.len() {
+                    self.bitfield.resize(byte_index + 1, 0);
+                }
+                self.bitfield[byte_index] |= 1 << bit_index;
                 Ok(Message::Have(index))
             }
             5 => {
