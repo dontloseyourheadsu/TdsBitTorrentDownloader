@@ -150,13 +150,21 @@ async fn main() {
         storage.get_file_path(&torrent.name)
     };
 
-    let file = tokio::fs::File::create(&file_path).await.unwrap();
+    let file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&file_path)
+        .await
+        .unwrap();
     file.set_len(total_length).await.unwrap();
     let file = Arc::new(Mutex::new(file));
 
     let mut handles = Vec::new();
     let torrent_arc = Arc::new(torrent);
     let (tx, _) = broadcast::channel(1);
+    let uploaded_total = Arc::new(Mutex::new(0u64));
+    let downloaded_total = Arc::new(Mutex::new(0u64));
 
     for peer_addr in peers {
         let piece_status = piece_status.clone();
@@ -165,6 +173,8 @@ async fn main() {
         let peer_id = peer_id;
         let mut rx = tx.subscribe();
         let tx = tx.clone();
+        let uploaded_total = uploaded_total.clone();
+        let downloaded_total = downloaded_total.clone();
 
         handles.push(tokio::spawn(async move {
             println!("Connecting to {}", peer_addr);
@@ -185,6 +195,7 @@ async fn main() {
 
             let mut current_piece_idx: Option<usize> = None;
             let mut current_piece_data: Vec<u8> = Vec::new();
+            let mut uploaded_session: u64 = 0;
             let mut blocks_received: usize = 0;
             let mut blocks_total: usize = 0;
 
@@ -249,7 +260,24 @@ async fn main() {
                                             let mut status = piece_status.lock().await;
                                             status[curr] = PieceStatus::Have;
 
+                                            let mut d_total = downloaded_total.lock().await;
+                                            *d_total += current_piece_data.len() as u64;
+                                            println!(
+                                                "Downloaded piece {} from {} (Total: {})",
+                                                curr, peer_addr, *d_total
+                                            );
+
                                             current_piece_idx = None;
+
+                                            // Tell peer we have this piece
+                                            if let Err(e) =
+                                                peer.send_message(Message::Have(curr as u32)).await
+                                            {
+                                                eprintln!(
+                                                    "Error sending Have to {}: {}",
+                                                    peer_addr, e
+                                                );
+                                            }
                                         } else {
                                             eprintln!(
                                                 "Piece {} hash mismatch from {}!",
@@ -262,6 +290,66 @@ async fn main() {
                                     }
                                 }
                             }
+                        }
+                    }
+                    Message::Request {
+                        index,
+                        begin,
+                        length,
+                    } => {
+                        // Check if we have the piece
+                        let has_piece = {
+                            let status = piece_status.lock().await;
+                            status
+                                .get(index as usize)
+                                .map(|&s| s == PieceStatus::Have)
+                                .unwrap_or(false)
+                        };
+
+                        if has_piece {
+                            if length > 128 * 1024 {
+                                eprintln!(
+                                    "Requested block too large from {}: {}",
+                                    peer_addr, length
+                                );
+                                continue;
+                            }
+
+                            let offset = (index as u64 * torrent.piece_length) + begin as u64;
+                            let mut buf = vec![0u8; length as usize];
+
+                            let mut f = file.lock().await;
+                            if let Err(e) = f.seek(SeekFrom::Start(offset)).await {
+                                eprintln!("Seek error reading for upload: {}", e);
+                                continue;
+                            }
+                            // Use read_exact to ensure we get the full block
+                            use tokio::io::AsyncReadExt;
+                            if let Err(e) = f.read_exact(&mut buf).await {
+                                eprintln!("Read error for upload: {}", e);
+                                continue;
+                            }
+                            drop(f);
+
+                            if let Err(e) = peer
+                                .send_message(Message::Piece {
+                                    index,
+                                    begin,
+                                    block: buf,
+                                })
+                                .await
+                            {
+                                eprintln!("Error sending piece to {}: {}", peer_addr, e);
+                                break;
+                            }
+
+                            uploaded_session += length as u64;
+                            let mut total = uploaded_total.lock().await;
+                            *total += length as u64;
+                            println!(
+                                "Uploaded {} bytes to {} (Session: {}, Total: {})",
+                                length, peer_addr, uploaded_session, *total
+                            );
                         }
                     }
                     _ => {}

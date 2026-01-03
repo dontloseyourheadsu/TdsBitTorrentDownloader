@@ -135,6 +135,18 @@ impl PeerConnection {
                 self.stream.write_u32(begin).await?;
                 self.stream.write_u32(length).await?;
             }
+            Message::Piece {
+                index,
+                begin,
+                block,
+            } => {
+                let len = 9 + block.len() as u32;
+                self.stream.write_u32(len).await?;
+                self.stream.write_u8(7).await?;
+                self.stream.write_u32(index).await?;
+                self.stream.write_u32(begin).await?;
+                self.stream.write_all(&block).await?;
+            }
             _ => {} // Implement others as needed
         }
         Ok(())
