@@ -84,13 +84,73 @@ async fn main() {
 
     println!("Total length: {}", total_length);
 
+    let file_path = if torrent.length.is_none() {
+        println!("Multi-file torrents not fully supported yet, writing to 'output.bin'");
+        storage.get_file_path("output.bin")
+    } else {
+        storage.get_file_path(&torrent.name)
+    };
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&file_path)
+        .await
+        .unwrap();
+
+    let file_len = file.metadata().await.unwrap().len();
+    if file_len != total_length {
+        file.set_len(total_length).await.unwrap();
+    }
+
+    let piece_count = torrent.pieces.len();
+    let mut piece_status_vec = vec![PieceStatus::Missing; piece_count];
+    let mut downloaded_bytes = 0;
+
+    println!("Checking existing data...");
+    use tokio::io::AsyncReadExt;
+    for i in 0..piece_count {
+        let offset = i as u64 * torrent.piece_length;
+        let len = if i == piece_count - 1 {
+            let rem = total_length % torrent.piece_length;
+            if rem == 0 { torrent.piece_length } else { rem }
+        } else {
+            torrent.piece_length
+        };
+
+        if offset + len <= file_len {
+            if let Err(_) = file.seek(SeekFrom::Start(offset)).await {
+                continue;
+            }
+            let mut buf = vec![0u8; len as usize];
+            if file.read_exact(&mut buf).await.is_ok() {
+                let mut hasher = Sha1::new();
+                hasher.update(&buf);
+                let hash = hasher.finalize();
+                if hash.as_slice() == &torrent.pieces[i] {
+                    piece_status_vec[i] = PieceStatus::Have;
+                    downloaded_bytes += len;
+                }
+            }
+        }
+    }
+    println!(
+        "Resuming download. Found {}/{} pieces.",
+        piece_status_vec
+            .iter()
+            .filter(|&&s| s == PieceStatus::Have)
+            .count(),
+        piece_count
+    );
+
     let request = TrackerRequest {
         info_hash: torrent.info_hash,
         peer_id,
         port: 6881,
         uploaded: 0,
         downloaded: 0,
-        left: total_length,
+        left: total_length - downloaded_bytes,
         compact: true,
         no_peer_id: false,
         event: Some(TrackerEvent::Started),
@@ -140,31 +200,14 @@ async fn main() {
 
     println!("Found {} peers.", peers.len());
 
-    let piece_count = torrent.pieces.len();
-    let piece_status = Arc::new(Mutex::new(vec![PieceStatus::Missing; piece_count]));
-
-    let file_path = if torrent.length.is_none() {
-        println!("Multi-file torrents not fully supported yet, writing to 'output.bin'");
-        storage.get_file_path("output.bin")
-    } else {
-        storage.get_file_path(&torrent.name)
-    };
-
-    let file = tokio::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(&file_path)
-        .await
-        .unwrap();
-    file.set_len(total_length).await.unwrap();
+    let piece_status = Arc::new(Mutex::new(piece_status_vec));
     let file = Arc::new(Mutex::new(file));
 
     let mut handles = Vec::new();
     let torrent_arc = Arc::new(torrent);
     let (tx, _) = broadcast::channel(1);
     let uploaded_total = Arc::new(Mutex::new(0u64));
-    let downloaded_total = Arc::new(Mutex::new(0u64));
+    let downloaded_total = Arc::new(Mutex::new(downloaded_bytes));
     let semaphore = Arc::new(Semaphore::new(50));
 
     for peer_addr in peers {
@@ -190,6 +233,24 @@ async fn main() {
                     }
                 };
             println!("Connected to {}", peer_addr);
+
+            {
+                let status = piece_status.lock().await;
+                if status.iter().any(|&s| s == PieceStatus::Have) {
+                    let mut bitfield = vec![0u8; (status.len() + 7) / 8];
+                    for (i, s) in status.iter().enumerate() {
+                        if *s == PieceStatus::Have {
+                            let byte_idx = i / 8;
+                            let bit_idx = 7 - (i % 8);
+                            bitfield[byte_idx] |= 1 << bit_idx;
+                        }
+                    }
+                    if let Err(e) = peer.send_message(Message::Bitfield(bitfield)).await {
+                        eprintln!("Error sending bitfield to {}: {}", peer_addr, e);
+                        return;
+                    }
+                }
+            }
 
             if let Err(e) = peer.send_message(Message::Interested).await {
                 eprintln!("Error sending interested to {}: {}", peer_addr, e);
