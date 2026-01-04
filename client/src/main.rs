@@ -5,7 +5,7 @@ use std::io::SeekFrom;
 use std::sync::Arc;
 use tds_core::parse_torrent;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, Semaphore, broadcast};
 use tracker::{TrackerEvent, TrackerRequest, get_tracker_client};
 
 mod peer;
@@ -165,6 +165,7 @@ async fn main() {
     let (tx, _) = broadcast::channel(1);
     let uploaded_total = Arc::new(Mutex::new(0u64));
     let downloaded_total = Arc::new(Mutex::new(0u64));
+    let semaphore = Arc::new(Semaphore::new(50));
 
     for peer_addr in peers {
         let piece_status = piece_status.clone();
@@ -175,8 +176,10 @@ async fn main() {
         let tx = tx.clone();
         let uploaded_total = uploaded_total.clone();
         let downloaded_total = downloaded_total.clone();
+        let semaphore = semaphore.clone();
 
         handles.push(tokio::spawn(async move {
+            let _permit = semaphore.acquire_owned().await.unwrap();
             println!("Connecting to {}", peer_addr);
             let mut peer =
                 match PeerConnection::connect(peer_addr, &torrent.info_hash, &peer_id).await {
@@ -286,6 +289,7 @@ async fn main() {
                                             let mut status = piece_status.lock().await;
                                             status[curr] = PieceStatus::Missing;
                                             current_piece_idx = None;
+                                            break;
                                         }
                                     }
                                 }

@@ -155,62 +155,69 @@ impl PeerConnection {
     pub async fn read_message(
         &mut self,
     ) -> Result<Message, Box<dyn std::error::Error + Send + Sync>> {
-        let len = self.stream.read_u32().await?;
-        if len == 0 {
-            return Ok(Message::KeepAlive);
-        }
+        let fut = async {
+            let len = self.stream.read_u32().await?;
+            if len == 0 {
+                return Ok(Message::KeepAlive);
+            }
 
-        let id = self.stream.read_u8().await?;
-        match id {
-            0 => {
-                self.peer_choking = true;
-                Ok(Message::Choke)
-            }
-            1 => {
-                self.peer_choking = false;
-                Ok(Message::Unchoke)
-            }
-            2 => {
-                self.peer_interested = true;
-                Ok(Message::Interested)
-            }
-            3 => {
-                self.peer_interested = false;
-                Ok(Message::NotInterested)
-            }
-            4 => {
-                let index = self.stream.read_u32().await?;
-                let byte_index = (index / 8) as usize;
-                let bit_index = 7 - (index % 8);
-                if byte_index >= self.bitfield.len() {
-                    self.bitfield.resize(byte_index + 1, 0);
+            let id = self.stream.read_u8().await?;
+            match id {
+                0 => {
+                    self.peer_choking = true;
+                    Ok(Message::Choke)
                 }
-                self.bitfield[byte_index] |= 1 << bit_index;
-                Ok(Message::Have(index))
+                1 => {
+                    self.peer_choking = false;
+                    Ok(Message::Unchoke)
+                }
+                2 => {
+                    self.peer_interested = true;
+                    Ok(Message::Interested)
+                }
+                3 => {
+                    self.peer_interested = false;
+                    Ok(Message::NotInterested)
+                }
+                4 => {
+                    let index = self.stream.read_u32().await?;
+                    let byte_index = (index / 8) as usize;
+                    let bit_index = 7 - (index % 8);
+                    if byte_index >= self.bitfield.len() {
+                        self.bitfield.resize(byte_index + 1, 0);
+                    }
+                    self.bitfield[byte_index] |= 1 << bit_index;
+                    Ok(Message::Have(index))
+                }
+                5 => {
+                    let mut payload = vec![0u8; (len - 1) as usize];
+                    self.stream.read_exact(&mut payload).await?;
+                    self.bitfield = payload.clone();
+                    Ok(Message::Bitfield(payload))
+                }
+                7 => {
+                    let index = self.stream.read_u32().await?;
+                    let begin = self.stream.read_u32().await?;
+                    let mut block = vec![0u8; (len - 9) as usize];
+                    self.stream.read_exact(&mut block).await?;
+                    Ok(Message::Piece {
+                        index,
+                        begin,
+                        block,
+                    })
+                }
+                _ => {
+                    // Skip unknown message
+                    let mut buf = vec![0u8; (len - 1) as usize];
+                    self.stream.read_exact(&mut buf).await?;
+                    Err(format!("Unknown message id: {}", id).into())
+                }
             }
-            5 => {
-                let mut payload = vec![0u8; (len - 1) as usize];
-                self.stream.read_exact(&mut payload).await?;
-                self.bitfield = payload.clone();
-                Ok(Message::Bitfield(payload))
-            }
-            7 => {
-                let index = self.stream.read_u32().await?;
-                let begin = self.stream.read_u32().await?;
-                let mut block = vec![0u8; (len - 9) as usize];
-                self.stream.read_exact(&mut block).await?;
-                Ok(Message::Piece {
-                    index,
-                    begin,
-                    block,
-                })
-            }
-            _ => {
-                // Skip unknown message
-                let mut buf = vec![0u8; (len - 1) as usize];
-                self.stream.read_exact(&mut buf).await?;
-                Err(format!("Unknown message id: {}", id).into())
-            }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(30), fut).await {
+            Ok(res) => res,
+            Err(_) => Err("Read timeout".into()),
         }
     }
 }
