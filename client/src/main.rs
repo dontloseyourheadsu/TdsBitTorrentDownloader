@@ -5,13 +5,15 @@ use std::io::SeekFrom;
 use std::sync::Arc;
 use tds_core::parse_torrent;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::{Mutex, Semaphore, broadcast};
+use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
 use tracker::{TrackerEvent, TrackerRequest, get_tracker_client};
 
 mod peer;
 use peer::{Message, PeerConnection};
 mod storage;
 use storage::Storage;
+mod dht;
+use dht::Dht;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -160,75 +162,109 @@ async fn main() {
         tracker_id: None,
     };
 
-    let peers = tokio::task::spawn_blocking(move || {
-        let mut all_peers = Vec::new();
-        for url in tracker_urls {
+    let (peer_tx, mut peer_rx) = mpsc::channel(100);
+    let piece_status = Arc::new(Mutex::new(piece_status_vec));
+
+    // Tracker Discovery
+    let tracker_tx = peer_tx.clone();
+    let request_clone = request.clone();
+    let tracker_urls_clone = tracker_urls.clone();
+    tokio::spawn(async move {
+        for url in tracker_urls_clone {
             println!("Contacting tracker: {}", url);
-            if let Some(client) = get_tracker_client(&url) {
-                match client.announce(&request) {
-                    Ok(response) => {
-                        println!(
-                            "Tracker response received from {}! Found {} peers",
-                            url,
-                            response.peers.len()
-                        );
-                        all_peers.extend(response.peers);
-                        if !all_peers.is_empty() {
-                            return Some(all_peers);
-                        }
-                    }
-                    Err(e) => eprintln!("Tracker error ({}): {}", url, e),
+            let url_clone = url.clone();
+            let req_clone = request_clone.clone();
+            let res = tokio::task::spawn_blocking(move || {
+                if let Some(client) = get_tracker_client(&url_clone) {
+                    client.announce(&req_clone).ok()
+                } else {
+                    None
+                }
+            })
+            .await
+            .unwrap();
+
+            if let Some(response) = res {
+                println!(
+                    "Tracker response from {}: {} peers",
+                    url,
+                    response.peers.len()
+                );
+                for peer in response.peers {
+                    let _ = tracker_tx.send(peer).await;
                 }
             }
         }
-        if all_peers.is_empty() {
-            None
-        } else {
-            Some(all_peers)
+    });
+
+    // DHT Discovery
+    let dht_tx = peer_tx.clone();
+    let info_hash = torrent.info_hash;
+    tokio::spawn(async move {
+        match Dht::new(6882).await {
+            Ok(dht) => {
+                println!("DHT started on port 6882");
+                dht.start().await;
+                dht.bootstrap().await;
+
+                loop {
+                    dht.get_peers(info_hash).await;
+                    let peers = dht.get_found_peers().await;
+                    if !peers.is_empty() {
+                        println!("DHT found {} peers", peers.len());
+                        for peer in peers {
+                            let _ = dht_tx.send(peer).await;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            }
+            Err(e) => eprintln!("Failed to start DHT: {}", e),
         }
-    })
-    .await
-    .unwrap();
+    });
 
-    let peers = match peers {
-        Some(p) => p,
-        None => {
-            eprintln!("Failed to contact any tracker.");
-            return;
-        }
-    };
-
-    println!("Found {} peers.", peers.len());
-
-    let piece_status = Arc::new(Mutex::new(piece_status_vec));
     let file = Arc::new(Mutex::new(file));
-
     let mut handles = Vec::new();
     let torrent_arc = Arc::new(torrent);
     let (tx, _) = broadcast::channel(1);
+    let mut completion_rx = tx.subscribe();
     let uploaded_total = Arc::new(Mutex::new(0u64));
     let downloaded_total = Arc::new(Mutex::new(downloaded_bytes));
     let semaphore = Arc::new(Semaphore::new(50));
+    let connected_peers = Arc::new(Mutex::new(std::collections::HashSet::new()));
 
-    for peer_addr in peers {
-        let piece_status = piece_status.clone();
-        let file = file.clone();
-        let torrent = torrent_arc.clone();
-        let peer_id = peer_id;
-        let mut rx = tx.subscribe();
-        let tx = tx.clone();
-        let uploaded_total = uploaded_total.clone();
-        let downloaded_total = downloaded_total.clone();
-        let semaphore = semaphore.clone();
+    loop {
+        tokio::select! {
+            res = peer_rx.recv() => {
+                if let Some(peer_addr) = res {
+                    let mut connected = connected_peers.lock().await;
+                    if connected.contains(&peer_addr) {
+                        continue;
+                    }
+                    connected.insert(peer_addr);
+                    drop(connected);
 
-        handles.push(tokio::spawn(async move {
-            let _permit = semaphore.acquire_owned().await.unwrap();
-            println!("Connecting to {}", peer_addr);
+                    let piece_status = piece_status.clone();
+                    let file = file.clone();
+                    let torrent = torrent_arc.clone();
+                    let peer_id = peer_id;
+                    let mut rx = tx.subscribe();
+                    let tx = tx.clone();
+                    let uploaded_total = uploaded_total.clone();
+                    let downloaded_total = downloaded_total.clone();
+                    let semaphore = semaphore.clone();
+                    let connected_peers = connected_peers.clone();
+
+                    handles.push(tokio::spawn(async move {
+                        let _permit = semaphore.acquire_owned().await.unwrap();
+                        println!("Connecting to {}", peer_addr);
+
             let mut peer =
                 match PeerConnection::connect(peer_addr, &torrent.info_hash, &peer_id).await {
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("Failed to connect to {}: {}", peer_addr, e);
+                        connected_peers.lock().await.remove(&peer_addr);
                         return;
                     }
                 };
@@ -490,11 +526,19 @@ async fn main() {
                     }
                 }
             }
+            connected_peers.lock().await.remove(&peer_addr);
         }));
-    }
-
-    for h in handles {
-        let _ = h.await;
+                }
+            }
+            _ = completion_rx.recv() => {
+                println!("All pieces downloaded! Stopping.");
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("Ctrl+C received, shutting down.");
+                break;
+            }
+        }
     }
     println!("Download finished.");
 }

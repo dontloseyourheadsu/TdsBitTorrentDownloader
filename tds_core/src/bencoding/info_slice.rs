@@ -1,5 +1,4 @@
-use super::bencode::Bencode;
-use super::decoder::decode;
+use super::decoder::{Bencode, decode};
 use std::io;
 
 pub fn find_info_slice(input: &[u8]) -> io::Result<&[u8]> {

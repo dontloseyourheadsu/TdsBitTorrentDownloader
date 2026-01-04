@@ -1,6 +1,53 @@
-use super::bencode::Bencode;
 use std::collections::BTreeMap;
 use std::io;
+
+#[derive(Debug)]
+pub enum Bencode {
+    Int(i64),
+    Bytes(Vec<u8>),
+    List(Vec<Bencode>),
+    Dict(BTreeMap<Vec<u8>, Bencode>),
+}
+
+impl Bencode {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.encode_into(&mut buf);
+        buf
+    }
+
+    fn encode_into(&self, buf: &mut Vec<u8>) {
+        match self {
+            Bencode::Int(i) => {
+                buf.push(b'i');
+                buf.extend_from_slice(i.to_string().as_bytes());
+                buf.push(b'e');
+            }
+            Bencode::Bytes(b) => {
+                buf.extend_from_slice(b.len().to_string().as_bytes());
+                buf.push(b':');
+                buf.extend_from_slice(b);
+            }
+            Bencode::List(l) => {
+                buf.push(b'l');
+                for item in l {
+                    item.encode_into(buf);
+                }
+                buf.push(b'e');
+            }
+            Bencode::Dict(d) => {
+                buf.push(b'd');
+                for (k, v) in d {
+                    buf.extend_from_slice(k.len().to_string().as_bytes());
+                    buf.push(b':');
+                    buf.extend_from_slice(k);
+                    v.encode_into(buf);
+                }
+                buf.push(b'e');
+            }
+        }
+    }
+}
 
 pub fn decode(input: &[u8], pos: &mut usize) -> io::Result<Bencode> {
     if *pos >= input.len() {
