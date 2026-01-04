@@ -147,6 +147,12 @@ impl PeerConnection {
                 self.stream.write_u32(begin).await?;
                 self.stream.write_all(&block).await?;
             }
+            Message::Bitfield(bitfield) => {
+                let len = 1 + bitfield.len() as u32;
+                self.stream.write_u32(len).await?;
+                self.stream.write_u8(5).await?;
+                self.stream.write_all(&bitfield).await?;
+            }
             _ => {} // Implement others as needed
         }
         Ok(())
