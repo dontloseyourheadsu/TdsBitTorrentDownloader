@@ -4,6 +4,7 @@ use std::io::SeekFrom;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use tds_core::bencoding::{Bencode, decode};
+use tds_core::rate_limit::TokenBucket;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
 use tracker::{TrackerEvent, TrackerRequest, get_tracker_client};
@@ -104,6 +105,7 @@ pub async fn run(downloader: &mut Downloader) {
     let mut handles = Vec::new();
     let (tx, _) = broadcast::channel(1);
     let mut completion_rx = tx.subscribe();
+    let upload_limiter = Arc::new(Mutex::new(TokenBucket::new(2_000_000.0, 2_000_000.0))); // 2 MB/s
     let uploaded_total = Arc::new(Mutex::new(0u64));
     let downloaded_total = Arc::new(Mutex::new(downloader.downloaded_bytes));
     let semaphore = Arc::new(Semaphore::new(50));
@@ -131,6 +133,7 @@ pub async fn run(downloader: &mut Downloader) {
                     let downloaded_total = downloaded_total.clone();
                     let semaphore = semaphore.clone();
                     let connected_peers = connected_peers.clone();
+                    let upload_limiter = upload_limiter.clone();
                     let total_length = downloader.total_length;
                     let piece_count = torrent.pieces.len();
 
@@ -214,6 +217,54 @@ pub async fn run(downloader: &mut Downloader) {
                             match msg {
                                 Message::Unchoke => {
                                     println!("{} unchoked us", peer_addr);
+                                }
+                                Message::Request { index, begin, length } => {
+                                    if length > 128 * 1024 {
+                                        eprintln!("Requested block too large: {}", length);
+                                        continue;
+                                    }
+
+                                    let status = piece_status.lock().await;
+                                    if status.get(index as usize).map(|&s| s == PieceStatus::Have).unwrap_or(false) {
+                                        drop(status);
+
+                                        let mut bucket = upload_limiter.lock().await;
+                                        while !bucket.consume(length as f64) {
+                                            drop(bucket);
+                                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                            bucket = upload_limiter.lock().await;
+                                        }
+                                        drop(bucket);
+
+                                        let mut f = file.lock().await;
+                                        let offset = (index as u64 * torrent.piece_length) + begin as u64;
+                                        if let Err(e) = f.seek(SeekFrom::Start(offset)).await {
+                                            eprintln!("Seek error: {}", e);
+                                            continue;
+                                        }
+                                        let mut block = vec![0u8; length as usize];
+                                        if let Err(e) = f.read_exact(&mut block).await {
+                                            eprintln!("Read error: {}", e);
+                                            continue;
+                                        }
+                                        drop(f);
+
+                                        if let Err(e) = peer.send_message(Message::Piece { index, begin, block }).await {
+                                            eprintln!("Error sending piece to {}: {}", peer_addr, e);
+                                            break;
+                                        }
+
+                                        let mut uploaded = uploaded_total.lock().await;
+                                        *uploaded += length as u64;
+                                        uploaded_session += length as u64;
+                                        println!(
+                                            "Uploaded {} bytes to {} (Session: {}, Total: {})",
+                                            length, peer_addr, uploaded_session, *uploaded
+                                        );
+                                    }
+                                }
+                                Message::Cancel { .. } => {
+                                    // TODO: Implement cancel
                                 }
                                 Message::Piece {
                                     index,
@@ -309,64 +360,7 @@ pub async fn run(downloader: &mut Downloader) {
                                         }
                                     }
                                 }
-                                Message::Request {
-                                    index,
-                                    begin,
-                                    length,
-                                } => {
-                                    let has_piece = {
-                                        let status = piece_status.lock().await;
-                                        status
-                                            .get(index as usize)
-                                            .map(|&s| s == PieceStatus::Have)
-                                            .unwrap_or(false)
-                                    };
 
-                                    if has_piece {
-                                        if length > 128 * 1024 {
-                                            eprintln!(
-                                                "Requested block too large from {}: {}",
-                                                peer_addr, length
-                                            );
-                                            continue;
-                                        }
-
-                                        let offset = (index as u64 * torrent.piece_length) + begin as u64;
-                                        let mut buf = vec![0u8; length as usize];
-
-                                        let mut f = file.lock().await;
-                                        if let Err(e) = f.seek(SeekFrom::Start(offset)).await {
-                                            eprintln!("Seek error reading for upload: {}", e);
-                                            continue;
-                                        }
-                                        use tokio::io::AsyncReadExt;
-                                        if let Err(e) = f.read_exact(&mut buf).await {
-                                            eprintln!("Read error for upload: {}", e);
-                                            continue;
-                                        }
-                                        drop(f);
-
-                                        if let Err(e) = peer
-                                            .send_message(Message::Piece {
-                                                index,
-                                                begin,
-                                                block: buf,
-                                            })
-                                            .await
-                                        {
-                                            eprintln!("Error sending piece to {}: {}", peer_addr, e);
-                                            break;
-                                        }
-
-                                        uploaded_session += length as u64;
-                                        let mut total = uploaded_total.lock().await;
-                                        *total += length as u64;
-                                        println!(
-                                            "Uploaded {} bytes to {} (Session: {}, Total: {})",
-                                            length, peer_addr, uploaded_session, *total
-                                        );
-                                    }
-                                }
                                 _ => {}
                             }
 
