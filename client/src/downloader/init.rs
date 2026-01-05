@@ -4,13 +4,12 @@ use rand::Rng;
 use sha1::{Digest, Sha1};
 use std::io::SeekFrom;
 use std::sync::Arc;
-use tds_core::parse_torrent;
-use tokio::fs::File;
+use tds_core::Torrent;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-pub async fn new(
-    torrent_path: &str,
+pub async fn from_torrent(
+    torrent: Torrent,
     output_path: Option<String>,
 ) -> Result<Downloader, Box<dyn std::error::Error + Send + Sync>> {
     let storage = match Storage::new(output_path).await {
@@ -18,11 +17,6 @@ pub async fn new(
         Err(e) => return Err(format!("Failed to initialize storage: {}", e).into()),
     };
     println!("Download directory: {}", storage.get_download_dir_str());
-
-    let torrent = match parse_torrent(torrent_path) {
-        Ok(t) => t,
-        Err(e) => return Err(format!("Error parsing torrent: {}", e).into()),
-    };
 
     println!("Torrent parsed successfully!");
     println!("Info Hash: {:x?}", torrent.info_hash);
