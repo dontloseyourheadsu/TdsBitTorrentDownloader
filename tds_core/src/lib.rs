@@ -1,6 +1,8 @@
 pub mod bencoding;
+pub mod rate_limit;
 
 use bencoding::{Bencode, decode, find_info_slice, info_hash};
+pub use rate_limit::TokenBucket;
 use std::io::{self, Read};
 
 #[derive(Debug, Clone)]
