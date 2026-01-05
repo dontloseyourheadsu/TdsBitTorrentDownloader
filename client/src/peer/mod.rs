@@ -214,6 +214,16 @@ impl PeerConnection {
                     self.bitfield = payload.clone();
                     Ok(Message::Bitfield(payload))
                 }
+                6 => {
+                    let index = self.stream.read_u32().await?;
+                    let begin = self.stream.read_u32().await?;
+                    let length = self.stream.read_u32().await?;
+                    Ok(Message::Request {
+                        index,
+                        begin,
+                        length,
+                    })
+                }
                 7 => {
                     let index = self.stream.read_u32().await?;
                     let begin = self.stream.read_u32().await?;
@@ -223,6 +233,16 @@ impl PeerConnection {
                         index,
                         begin,
                         block,
+                    })
+                }
+                8 => {
+                    let index = self.stream.read_u32().await?;
+                    let begin = self.stream.read_u32().await?;
+                    let length = self.stream.read_u32().await?;
+                    Ok(Message::Cancel {
+                        index,
+                        begin,
+                        length,
                     })
                 }
                 20 => {
