@@ -27,6 +27,10 @@ pub enum Message {
         begin: u32,
         length: u32,
     },
+    Extended {
+        id: u8,
+        payload: Vec<u8>,
+    },
 }
 
 pub struct PeerConnection {
@@ -63,7 +67,9 @@ impl PeerConnection {
         let mut handshake = Vec::new();
         handshake.push(19);
         handshake.extend_from_slice(b"BitTorrent protocol");
-        handshake.extend_from_slice(&[0u8; 8]); // Reserved
+        let mut reserved = [0u8; 8];
+        reserved[5] |= 0x10; // Extension protocol bit
+        handshake.extend_from_slice(&reserved);
         handshake.extend_from_slice(info_hash);
         handshake.extend_from_slice(client_id);
 
@@ -153,6 +159,13 @@ impl PeerConnection {
                 self.stream.write_u8(5).await?;
                 self.stream.write_all(&bitfield).await?;
             }
+            Message::Extended { id, payload } => {
+                let len = 2 + payload.len() as u32;
+                self.stream.write_u32(len).await?;
+                self.stream.write_u8(20).await?;
+                self.stream.write_u8(id).await?;
+                self.stream.write_all(&payload).await?;
+            }
             _ => {} // Implement others as needed
         }
         Ok(())
@@ -210,6 +223,15 @@ impl PeerConnection {
                         index,
                         begin,
                         block,
+                    })
+                }
+                20 => {
+                    let ext_id = self.stream.read_u8().await?;
+                    let mut payload = vec![0u8; (len - 2) as usize];
+                    self.stream.read_exact(&mut payload).await?;
+                    Ok(Message::Extended {
+                        id: ext_id,
+                        payload,
                     })
                 }
                 _ => {
