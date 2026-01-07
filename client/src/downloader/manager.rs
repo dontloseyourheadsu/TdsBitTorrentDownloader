@@ -13,7 +13,7 @@ use super::state::{Downloader, PieceStatus};
 use crate::dht::Dht;
 use crate::peer::{Message, PeerConnection};
 
-pub async fn run(downloader: &mut Downloader) {
+pub async fn run(downloader: &Downloader) {
     let mut tracker_urls = Vec::new();
     tracker_urls.push(downloader.torrent.announce.clone());
     if let Some(list) = &downloader.torrent.announce_list {
@@ -32,7 +32,7 @@ pub async fn run(downloader: &mut Downloader) {
         port: 6881,
         uploaded: 0,
         downloaded: 0,
-        left: downloader.total_length - downloader.downloaded_bytes,
+        left: downloader.total_length - *downloader.downloaded_bytes.lock().await,
         compact: true,
         no_peer_id: false,
         event: Some(TrackerEvent::Started),
@@ -106,8 +106,8 @@ pub async fn run(downloader: &mut Downloader) {
     let (tx, _) = broadcast::channel(1);
     let mut completion_rx = tx.subscribe();
     let upload_limiter = Arc::new(Mutex::new(TokenBucket::new(2_000_000.0, 2_000_000.0))); // 2 MB/s
-    let uploaded_total = Arc::new(Mutex::new(0u64));
-    let downloaded_total = Arc::new(Mutex::new(downloader.downloaded_bytes));
+    let uploaded_total = downloader.uploaded_bytes.clone();
+    let downloaded_total = downloader.downloaded_bytes.clone();
     let semaphore = Arc::new(Semaphore::new(50));
     let connected_peers = Arc::new(Mutex::new(std::collections::HashSet::new()));
 

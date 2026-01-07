@@ -1,13 +1,8 @@
 use clap::Parser;
-mod cli;
-mod dht;
-mod downloader;
-mod magnet;
-mod peer;
-mod storage;
 
-use cli::Args;
-use downloader::Downloader;
+use client::cli::Args;
+use client::downloader::Downloader;
+use client::magnet;
 use tds_core::Torrent;
 
 #[tokio::main]

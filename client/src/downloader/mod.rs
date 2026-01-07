@@ -22,12 +22,12 @@ impl Downloader {
     }
 
     pub async fn check_existing_data(
-        &mut self,
+        &self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         init::check_existing_data(self).await
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&self) {
         manager::run(self).await
     }
 }
