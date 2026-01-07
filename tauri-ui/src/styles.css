@@ -1,0 +1,125 @@
+:root {
+  --bg-color: #ffffff;
+  --text-color: #2c3e50;
+  --card-bg: #f8f9fa;
+  --input-bg: #ffffff;
+  --border-color: #dfe6e9;
+  --primary-color: #3498db;
+  --accent-color: #2980b9;
+}
+
+body.dark {
+  --bg-color: #1e1e1e;
+  --text-color: #ecf0f1;
+  --card-bg: #2d2d2d;
+  --input-bg: #333333;
+  --border-color: #444444;
+  --primary-color: #3498db;
+  --accent-color: #2980b9;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  transition: background-color 0.3s, color 0.3s;
+}
+
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+h1 {
+  margin: 0;
+}
+
+#theme-toggle {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: var(--text-color);
+}
+
+.input-group {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+input {
+  flex: 1;
+  padding: 0.75rem;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: var(--input-bg);
+  color: var(--text-color);
+  font-size: 1rem;
+}
+
+button#start-btn {
+  padding: 0.75rem 1.5rem;
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+button#start-btn:hover {
+  background-color: var(--accent-color);
+}
+
+.card {
+  background-color: var(--card-bg);
+  padding: 1.5rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.hidden {
+  display: none;
+}
+
+.progress-container {
+  height: 20px;
+  background-color: var(--input-bg);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 1rem 0;
+  border: 1px solid var(--border-color);
+}
+
+.progress-bar {
+  height: 100%;
+  background-color: var(--primary-color);
+  width: 0%;
+  transition: width 0.5s ease;
+}
+
+.stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+
+.logs {
+  margin-top: 2rem;
+  font-family: monospace;
+  white-space: pre-wrap;
+  color: var(--text-color);
+  opacity: 0.7;
+}
