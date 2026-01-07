@@ -1,4 +1,3 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use client::downloader::Downloader;
@@ -61,13 +60,11 @@ async fn start_download(
 
     let downloader_arc = Arc::new(downloader);
 
-    // Store in state
     {
         let mut d = state.downloader.lock().await;
         *d = Some(downloader_arc.clone());
     }
 
-    // Spawn the runner
     let d_clone = downloader_arc.clone();
     tokio::spawn(async move {
         d_clone.run().await;

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TDS Tracker Server</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="dark">
+    <!-- Defaulting to dark as requested -->
+    <div class="container">
+      <header>
+        <h1>TDS Tracker Server</h1>
+        <button id="theme-toggle">☀️</button>
+      </header>
+
+      <div class="card">
+        <h2>Configuration</h2>
+        <div class="input-group">
+          <label for="port-input">Port:</label>
+          <input type="number" id="port-input" value="6969" />
+        </div>
+        <div class="input-group">
+          <label for="udp-toggle">Use UDP:</label>
+          <input
+            type="checkbox"
+            id="udp-toggle"
+            disabled
+            title="UDP not yet implemented"
+          />
+        </div>
+        <div class="button-group">
+          <button id="start-btn">Start Tracker</button>
+          <button id="stop-btn" disabled>Stop Tracker</button>
+        </div>
+      </div>
+
+      <div id="status-card" class="card">
+        <h2>Status: <span id="status-val">Stopped</span></h2>
+      </div>
+
+      <div class="logs-container">
+        <h3>Logs</h3>
+        <div id="logs"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

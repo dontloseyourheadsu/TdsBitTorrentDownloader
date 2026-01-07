@@ -1,3 +1,9 @@
 [workspace]
-members = ["client", "tds_core", "tracker", "tauri-ui/src-tauri"]
+members = [
+    "client",
+    "tds_core",
+    "tracker",
+    "tauri-ui/src-tauri",
+    "tracker-ui/src-tauri",
+]
 resolver = "2"

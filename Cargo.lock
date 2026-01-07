@@ -3564,6 +3564,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tds-tracker-ui"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "tracker",
+]
+
+[[package]]
 name = "tds-ui"
 version = "0.1.0"
 dependencies = [
@@ -3935,6 +3947,7 @@ dependencies = [
  "reqwest",
  "serde",
  "tds_core",
+ "tokio",
  "url",
 ]
 
