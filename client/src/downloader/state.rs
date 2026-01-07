@@ -16,6 +16,7 @@ pub struct Downloader {
     pub storage: Storage,
     pub file: Arc<Mutex<File>>,
     pub piece_status: Arc<Mutex<Vec<PieceStatus>>>,
-    pub downloaded_bytes: u64,
+    pub downloaded_bytes: Arc<Mutex<u64>>,
+    pub uploaded_bytes: Arc<Mutex<u64>>,
     pub total_length: u64,
 }

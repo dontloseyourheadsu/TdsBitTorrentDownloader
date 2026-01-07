@@ -21,11 +21,14 @@ pub async fn from_torrent(
     println!("Torrent parsed successfully!");
     println!("Info Hash: {:x?}", torrent.info_hash);
 
-    let mut rng = rand::rng();
-    let mut peer_id = [0u8; 20];
-    rng.fill(&mut peer_id);
-    let prefix = b"-TD0001-";
-    peer_id[..8].copy_from_slice(prefix);
+    let peer_id = {
+        let mut rng = rand::rng();
+        let mut id = [0u8; 20];
+        rng.fill(&mut id);
+        let prefix = b"-TD0001-";
+        id[..8].copy_from_slice(prefix);
+        id
+    };
 
     let total_length = if let Some(len) = torrent.length {
         len
@@ -65,13 +68,14 @@ pub async fn from_torrent(
         storage,
         file: Arc::new(Mutex::new(file)),
         piece_status: Arc::new(Mutex::new(piece_status_vec)),
-        downloaded_bytes: 0,
+        downloaded_bytes: Arc::new(Mutex::new(0)),
+        uploaded_bytes: Arc::new(Mutex::new(0)),
         total_length,
     })
 }
 
 pub async fn check_existing_data(
-    downloader: &mut Downloader,
+    downloader: &Downloader,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Checking existing data...");
     let piece_count = downloader.torrent.pieces.len();
@@ -103,7 +107,7 @@ pub async fn check_existing_data(
                 let hash = hasher.finalize();
                 if hash.as_slice() == &downloader.torrent.pieces[i] {
                     piece_status[i] = PieceStatus::Have;
-                    downloader.downloaded_bytes += len;
+                    *downloader.downloaded_bytes.lock().await += len;
                 }
             }
         }

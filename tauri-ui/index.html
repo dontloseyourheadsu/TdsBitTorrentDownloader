@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TDS BitTorrent Client</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="dark">
+    <div class="container">
+      <header>
+        <h1>TDS Client</h1>
+        <button id="theme-toggle" title="Toggle Theme">☀️</button>
+      </header>
+
+      <main>
+        <div class="input-group">
+          <input
+            type="text"
+            id="torrent-input"
+            placeholder="Enter Magnet Link or Path to .torrent"
+          />
+          <button id="start-btn">Download</button>
+        </div>
+
+        <div id="status-card" class="card hidden">
+          <h2>Download Status</h2>
+          <div class="progress-container">
+            <div class="progress-bar" id="progress-bar"></div>
+          </div>
+          <div class="stats">
+            <span>Downloaded: <span id="downloaded-val">0</span> MB</span>
+            <span>Total: <span id="total-val">0</span> MB</span>
+            <span>Progress: <span id="progress-val">0%</span></span>
+          </div>
+        </div>
+
+        <div id="logs" class="logs"></div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
