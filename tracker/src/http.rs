@@ -1,12 +1,19 @@
+//! HTTP Tracker Client implementation.
+
 use super::{TrackerClient, TrackerEvent, TrackerRequest, TrackerResponse};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tds_core::bencoding::{decode, Bencode};
+use tds_core::bencoding::{Bencode, decode};
 
+/// Client for communicating with HTTP/HTTPS trackers.
 pub struct HttpTracker {
     url: String,
 }
 
 impl HttpTracker {
+    /// Creates a new `HttpTracker`.
+    ///
+    /// # Arguments
+    /// * `url` - The URL of the tracker announce endpoint.
     pub fn new(url: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -15,6 +22,9 @@ impl HttpTracker {
 }
 
 impl TrackerClient for HttpTracker {
+    /// Sends an announce request to the HTTP tracker.
+    ///
+    /// This uses a blocking HTTP request (reqwest::blocking) to contact the tracker.
     fn announce(&self, request: &TrackerRequest) -> Result<TrackerResponse, String> {
         let info_hash_encoded =
             form_urlencoded::byte_serialize(&request.info_hash).collect::<String>();

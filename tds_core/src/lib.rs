@@ -1,3 +1,8 @@
+//! Core library for the TDS BitTorrent Client.
+//!
+//! This library provides data structures and functions for parsing `.torrent` files
+//! and handling bencoded data.
+
 pub mod bencoding;
 pub mod rate_limit;
 
@@ -5,24 +10,41 @@ use bencoding::{Bencode, decode, find_info_slice, info_hash};
 pub use rate_limit::TokenBucket;
 use std::io::{self, Read};
 
+/// Information about a single file in a multi-file torrent.
 #[derive(Debug, Clone)]
 pub struct FileInfo {
+    /// The length of the file in bytes.
     pub length: u64,
+    /// The path components of the file.
     pub path: Vec<String>,
 }
 
+/// Represents the metadata of a torrent.
 #[derive(Debug)]
 pub struct Torrent {
+    /// The URL of the tracker.
     pub announce: String,
+    /// Optional list of backup trackers (tier-based).
     pub announce_list: Option<Vec<Vec<String>>>,
+    /// The SHA-1 hash of the info dictionary.
     pub info_hash: [u8; 20],
+    /// The length of a single piece in bytes.
     pub piece_length: u64,
+    /// The list of SHA-1 hashes for each piece.
     pub pieces: Vec<[u8; 20]>,
+    /// The name of the file or directory.
     pub name: String,
+    /// Total length of the file (single-file mode).
     pub length: Option<u64>,
+    /// List of files (multi-file mode).
     pub files: Option<Vec<FileInfo>>,
 }
 
+/// Parses a `.torrent` file from the disk.
+///
+/// # Arguments
+///
+/// * `path` - The path to the torrent file.
 pub fn parse_torrent(path: &str) -> io::Result<Torrent> {
     match std::fs::File::open(path) {
         Ok(mut file) => {
@@ -34,6 +56,11 @@ pub fn parse_torrent(path: &str) -> io::Result<Torrent> {
     }
 }
 
+/// Parses a torrent from a byte slice.
+///
+/// # Arguments
+///
+/// * `buf` - The byte slice containing the bencoded torrent data.
 pub fn parse_torrent_from_bytes(buf: &[u8]) -> io::Result<Torrent> {
     let mut pos = 0;
     let root = decode(buf, &mut pos)?;
@@ -44,11 +71,7 @@ pub fn parse_torrent_from_bytes(buf: &[u8]) -> io::Result<Torrent> {
     if let Bencode::Dict(ref dict) = root {
         let announce = match dict.get(&b"announce"[..]) {
             Some(Bencode::Bytes(bytes)) => String::from_utf8_lossy(bytes).to_string(),
-            _ => String::new(), // Handle missing announce for magnet links later or return error?
-                                // For now, let's allow empty announce if we want, or default.
-                                // But original code enforced it.
-                                // Let's keep strictness or make it optional?
-                                // If I construct the bytes in magnet resolver, I can provide a dummy announce.
+            _ => String::new(), 
         };
 
         let announce_list = if let Some(Bencode::List(list)) = dict.get(&b"announce-list"[..]) {
@@ -168,5 +191,41 @@ pub fn parse_torrent_from_bytes(buf: &[u8]) -> io::Result<Torrent> {
             io::ErrorKind::InvalidData,
             "Torrent file root is not a dictionary",
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn create_dummy_torrent() -> Vec<u8> {
+        // Hand-craft a simple single-file torrent structure
+        // d8:announce15:http://track.er4:infod6:lengthi12345e4:name8:testfile12:piece lengthi16384e6:pieces20:00000000000000000000ee
+        // pieces needs 20 bytes. Let's make it more readable or just raw.
+        // announce: http://track.er (15 chars)
+        let mut t = "d8:announce15:http://track.er4:infod6:lengthi12345e4:name8:testfile12:piece lengthi16384e6:pieces20:".as_bytes().to_vec();
+        t.extend_from_slice(&[b'X'; 20]); // dummy hash
+        t.extend_from_slice(b"ee");
+        t
+    }
+
+    #[test]
+    fn test_parse_simple_torrent() {
+        let buf = create_dummy_torrent();
+        let t = parse_torrent_from_bytes(&buf).expect("Should parse");
+        assert_eq!(t.announce, "http://track.er");
+        assert_eq!(t.name, "testfile");
+        assert_eq!(t.length, Some(12345));
+        assert_eq!(t.piece_length, 16384);
+        assert_eq!(t.pieces.len(), 1);
+        assert!(t.files.is_none());
+    }
+
+    #[test]
+    fn test_parse_invalid_torrent() {
+        let buf = b"invalid";
+        let res = parse_torrent_from_bytes(buf);
+        assert!(res.is_err());
     }
 }

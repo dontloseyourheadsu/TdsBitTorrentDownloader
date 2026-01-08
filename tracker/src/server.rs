@@ -1,3 +1,8 @@
+//! Simple HTTP Tracker Server Implementation.
+//!
+//! This module implements a basic BitTorrent tracker server that handles HTTP GET announce requests.
+//! It maintains a list of peers for each torrent info hash and performs rate limiting based on IP address.
+
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -9,29 +14,43 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use url::Url;
 
+/// Holds the in-memory state of the tracker.
 pub struct TrackerState {
-    // InfoHash (hex string) -> List of Peers
+    /// Maps InfoHash (hex string) to a list of Peers.
     pub torrents: HashMap<String, Vec<Peer>>,
-    // Rate Limiter: IP -> TokenBucket
+    /// Rate limit buckets per IP address.
     pub rate_limits: HashMap<IpAddr, TokenBucket>,
 }
 
+/// Represents a peer connected to the tracker.
 #[derive(Clone, Debug)]
 pub struct Peer {
+    /// Peer ID.
     pub id: String,
+    /// Peer IP address.
     pub ip: IpAddr,
+    /// Peer port.
     pub port: u16,
+    /// Last time this peer announced.
     pub last_seen: Instant,
 }
 
+/// The main Tracker Server struct.
 #[derive(Clone)]
 pub struct TrackerServer {
+    /// Shared state guarded by a Mutex.
     pub state: Arc<Mutex<TrackerState>>,
+    /// The port to listen on.
     pub port: u16,
+    /// Flag to control the server loop.
     pub running: Arc<Mutex<bool>>,
 }
 
 impl TrackerServer {
+    /// Creates a new `TrackerServer` instance.
+    ///
+    /// # Arguments
+    /// * `port` - The port to listen on.
     pub fn new(port: u16) -> Self {
         Self {
             state: Arc::new(Mutex::new(TrackerState {
@@ -43,6 +62,10 @@ impl TrackerServer {
         }
     }
 
+    /// Starts the tracker server.
+    ///
+    /// This function binds to the configured port and starts accepting incoming TCP connections.
+    /// It runs until `running` is set to false or an error occurs.
     pub async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port)).await?;
         println!("Tracker server listening on 0.0.0.0:{}", self.port);
@@ -225,4 +248,72 @@ async fn handle_announce(
 
     let _ = stream.write_all(header.as_bytes()).await;
     let _ = stream.write_all(&body).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_tracker_state_peer_management() {
+        let state = Arc::new(Mutex::new(TrackerState {
+            torrents: HashMap::new(),
+            rate_limits: HashMap::new(),
+        }));
+
+        let info_hash = "infohash1".to_string();
+        let peer_id = "peer1".to_string();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let port = 6881;
+
+        // Simulate announce
+        {
+            let mut guard = state.lock().await;
+            let swarm = guard.torrents.entry(info_hash.clone()).or_insert_with(Vec::new);
+            swarm.push(Peer {
+                id: peer_id.clone(),
+                ip,
+                port,
+                last_seen: Instant::now(),
+            });
+        }
+
+        // Verify peer added
+        {
+            let guard = state.lock().await;
+            let swarm = guard.torrents.get(&info_hash).expect("Swarm should exist");
+            assert_eq!(swarm.len(), 1);
+            assert_eq!(swarm[0].id, peer_id);
+        }
+
+        // Simulate duplicate announce (update existing)
+        {
+            let mut guard = state.lock().await;
+            let swarm = guard.torrents.get_mut(&info_hash).unwrap();
+            let mut found = false;
+            for peer in swarm.iter_mut() {
+                if peer.id == peer_id {
+                    peer.port = 6882; // Changed port
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                 swarm.push(Peer {
+                    id: peer_id.clone(),
+                    ip,
+                    port: 6882,
+                    last_seen: Instant::now(),
+                });
+            }
+        }
+        
+         // Verify peer updated
+        {
+            let guard = state.lock().await;
+            let swarm = guard.torrents.get(&info_hash).unwrap();
+            assert_eq!(swarm.len(), 1);
+            assert_eq!(swarm[0].port, 6882);
+        }
+    }
 }

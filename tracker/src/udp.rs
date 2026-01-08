@@ -1,3 +1,5 @@
+//! UDP Tracker Client implementation.
+
 use super::{TrackerClient, TrackerEvent, TrackerRequest, TrackerResponse};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use rand::Rng;
@@ -5,11 +7,16 @@ use std::io::{Cursor, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::Duration;
 
+/// Client for communicating with UDP trackers (BEP 15).
 pub struct UdpTracker {
     url: String,
 }
 
 impl UdpTracker {
+    /// Creates a new `UdpTracker`.
+    ///
+    /// # Arguments
+    /// * `url` - The UDP URL of the tracker (e.g., `udp://tracker.opentrackr.org:1337`).
     pub fn new(url: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -18,6 +25,13 @@ impl UdpTracker {
 }
 
 impl TrackerClient for UdpTracker {
+    /// Sends an announce request to the UDP tracker.
+    ///
+    /// Implementation details:
+    /// 1. Sends a Connect Request.
+    /// 2. Receives a Connect Response with a Connection ID.
+    /// 3. Sends an Announce Request using the Connection ID.
+    /// 4. Receives an Announce Response.
     fn announce(&self, request: &TrackerRequest) -> Result<TrackerResponse, String> {
         // Parse URL to get host and port
         let url_parsed = url::Url::parse(&self.url).map_err(|e| e.to_string())?;
