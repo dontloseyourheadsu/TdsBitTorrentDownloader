@@ -2,7 +2,7 @@
 
 use super::{TrackerClient, TrackerEvent, TrackerRequest, TrackerResponse};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tds_core::bencoding::{decode, Bencode};
+use tds_core::bencoding::{Bencode, decode};
 
 /// Client for communicating with HTTP/HTTPS trackers.
 pub struct HttpTracker {

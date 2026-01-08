@@ -1,3 +1,8 @@
+//! Tauri Backend for tds-ui.
+//!
+//! Handles communication between the frontend and the `client` library.
+//! Manages the state of the active downloader.
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use client::downloader::Downloader;
@@ -6,19 +11,36 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
 
+/// Application state managed by Tauri.
 struct AppState {
+    /// The currently active downloader instance, if any.
     downloader: Mutex<Option<Arc<Downloader>>>,
 }
 
+/// Status of the current torrent download.
 #[derive(serde::Serialize, Clone)]
 struct TorrentStatus {
+    /// Whether a download is active.
     active: bool,
+    /// Bytes downloaded.
     downloaded: u64,
+    /// Bytes uploaded (mock).
     uploaded: u64,
+    /// Total size of the torrent.
     total: u64,
+    /// Progress percentage (0.0 to 100.0).
     progress: f64,
 }
 
+/// Starts a download from a torrent file or magnet link.
+///
+/// # Arguments
+/// * `state` - The application state.
+/// * `torrent_input` - File path or Magnet URI.
+/// * `output_path` - Optional directory to save files to.
+///
+/// # Returns
+/// "Download started" on success, or an error message.
 #[tauri::command]
 async fn start_download(
     state: State<'_, AppState>,
@@ -73,6 +95,13 @@ async fn start_download(
     Ok("Download started".to_string())
 }
 
+/// Retrieves the current status of the download.
+///
+/// # Arguments
+/// * `state` - The application state.
+///
+/// # Returns
+/// A `TorrentStatus` struct containing progress, downloaded bytes, etc.
 #[tauri::command]
 async fn get_status(state: State<'_, AppState>) -> Result<TorrentStatus, String> {
     let d_lock = state.downloader.lock().await;
@@ -106,6 +135,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<TorrentStatus, String>
     }
 }
 
+/// Main entry point for the Tauri application.
 pub fn main() {
     tauri::Builder::default()
         .manage(AppState {

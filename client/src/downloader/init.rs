@@ -8,6 +8,24 @@ use tds_core::Torrent;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
+/// Initializes a `Downloader` instance from a parsed `Torrent`.
+///
+/// This function:
+/// 1. Initializes the `Storage` for the download directory.
+/// 2. Generates a random Peer ID.
+/// 3. Calculates the total length of the torrent content.
+/// 4. Opens (or creates) the target file(s) for writing.
+/// 5. Pre-allocates the file size if necessary.
+/// 6. Initializes the piece status vector to `Missing`.
+///
+/// # Arguments
+///
+/// * `torrent` - The parsed torrent metadata.
+/// * `output_path` - Optional custom output directory path.
+///
+/// # Returns
+///
+/// * `Result<Downloader, ...>` - The initialized downloader or an error.
 pub async fn from_torrent(
     torrent: Torrent,
     output_path: Option<String>,
@@ -74,6 +92,17 @@ pub async fn from_torrent(
     })
 }
 
+/// Checks for existing data on disk and updates piece status.
+///
+/// This function iterates through all pieces defined in the torrent:
+/// 1. Reads the corresponding byte range from the file.
+/// 2. Computes the SHA-1 hash.
+/// 3. Compares it with the hash in the torrent metadata.
+/// 4. If they match, marks the piece as `Have` and updates `downloaded_bytes`.
+///
+/// # Arguments
+///
+/// * `downloader` - The downloader instance to check.
 pub async fn check_existing_data(
     downloader: &Downloader,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -121,4 +150,86 @@ pub async fn check_existing_data(
         piece_count
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_from_torrent_basic() {
+        let dir = tempdir().unwrap();
+        let path_str = dir.path().to_str().unwrap().to_string();
+
+        let torrent = Torrent {
+            announce: "http://tracker.com".to_string(),
+            announce_list: None,
+            info_hash: [0u8; 20],
+            name: "test_file.txt".to_string(),
+            pieces: vec![[0u8; 20]],
+            piece_length: 1024,
+            length: Some(1024),
+            files: None,
+        };
+
+        let result = from_torrent(torrent, Some(path_str.clone())).await;
+        assert!(result.is_ok());
+
+        let downloader = result.unwrap();
+        assert_eq!(downloader.total_length, 1024);
+        assert_eq!(downloader.piece_status.lock().await.len(), 1);
+        
+        // File should exist and be 1024 bytes
+        let file_path = dir.path().join("test_file.txt");
+        assert!(file_path.exists());
+        let metadata = tokio::fs::metadata(file_path).await.unwrap();
+        assert_eq!(metadata.len(), 1024);
+    }
+
+    #[tokio::test]
+    async fn test_check_existing_data() {
+        let dir = tempdir().unwrap();
+        let path_str = dir.path().to_str().unwrap().to_string();
+
+        // Create a dummy piece (All 'A's)
+        let piece_data = vec![b'A'; 10];
+        let mut hasher = Sha1::new();
+        hasher.update(&piece_data);
+        let hash = hasher.finalize().to_vec();
+        let mut hash_arr = [0u8; 20];
+        hash_arr.copy_from_slice(&hash);
+
+        let torrent = Torrent {
+            announce: "http://tracker.com".to_string(),
+            announce_list: None,
+            info_hash: [0u8; 20],
+            name: "existing.txt".to_string(),
+            pieces: vec![hash_arr],
+            piece_length: 10,
+            length: Some(10),
+            files: None,
+        };
+
+        // Write the valid data to the file first
+        let file_path = dir.path().join("existing.txt");
+        tokio::fs::write(&file_path, &piece_data).await.unwrap();
+
+        let downloader = from_torrent(torrent, Some(path_str)).await.unwrap();
+        
+        // Status should be missing initially
+        {
+            let status = downloader.piece_status.lock().await;
+            assert_eq!(status[0], PieceStatus::Missing);
+        }
+
+        // Run check
+        check_existing_data(&downloader).await.unwrap();
+
+        // Status should be Have
+        {
+            let status = downloader.piece_status.lock().await;
+            assert_eq!(status[0], PieceStatus::Have);
+        }
+    }
 }

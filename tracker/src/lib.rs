@@ -63,9 +63,9 @@ pub struct TrackerResponse {
     /// List of peers received from the tracker.
     pub peers: Vec<SocketAddrV4>,
     /// Number of seeders (complete peers).
-    pub complete: Option<u32>,   
+    pub complete: Option<u32>,
     /// Number of leechers (incomplete peers).
-    pub incomplete: Option<u32>, 
+    pub incomplete: Option<u32>,
 }
 
 /// Trait for a Tracker Client.
