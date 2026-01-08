@@ -1,15 +1,23 @@
+//! Bencode decoder/encoder.
+
 use std::collections::BTreeMap;
 use std::io;
 
-#[derive(Debug)]
+/// Represents a Bencoded value.
+#[derive(Debug, PartialEq, Clone)]
 pub enum Bencode {
+    /// An integer value.
     Int(i64),
+    /// A byte array (string).
     Bytes(Vec<u8>),
+    /// A list of Bencoded values.
     List(Vec<Bencode>),
+    /// A dictionary mapping byte arrays to Bencoded values.
     Dict(BTreeMap<Vec<u8>, Bencode>),
 }
 
 impl Bencode {
+    /// Encodes the Bencode value into a byte vector.
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.encode_into(&mut buf);
@@ -49,6 +57,11 @@ impl Bencode {
     }
 }
 
+/// Decodes a Bencoded value from a byte slice.
+///
+/// # Arguments
+/// * `input` - The byte slice to decode.
+/// * `pos` - A mutable reference to the current position in the input.
 pub fn decode(input: &[u8], pos: &mut usize) -> io::Result<Bencode> {
     if *pos >= input.len() {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF reached"));
@@ -191,5 +204,64 @@ pub fn decode(input: &[u8], pos: &mut usize) -> io::Result<Bencode> {
             io::ErrorKind::InvalidData,
             format!("invalid bencode char: '{}' at pos {}", c as char, *pos),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_decode_int() {
+        let val = Bencode::Int(42);
+        let encoded = val.encode();
+        assert_eq!(encoded, b"i42e");
+
+        let mut pos = 0;
+        let decoded = decode(&encoded, &mut pos).unwrap();
+        assert_eq!(decoded, val);
+    }
+
+    #[test]
+    fn test_encode_decode_string() {
+        let val = Bencode::Bytes(b"hello".to_vec());
+        let encoded = val.encode();
+        assert_eq!(encoded, b"5:hello");
+
+        let mut pos = 0;
+        let decoded = decode(&encoded, &mut pos).unwrap();
+        assert_eq!(decoded, val);
+    }
+
+    #[test]
+    fn test_encode_decode_list() {
+        let val = Bencode::List(vec![Bencode::Int(1), Bencode::Bytes(b"a".to_vec())]);
+        let encoded = val.encode();
+        assert_eq!(encoded, b"li1e1:ae");
+
+        let mut pos = 0;
+        let decoded = decode(&encoded, &mut pos).unwrap();
+        assert_eq!(decoded, val);
+    }
+
+    #[test]
+    fn test_encode_decode_dict() {
+        let mut map = BTreeMap::new();
+        map.insert(b"a".to_vec(), Bencode::Int(1));
+        map.insert(b"b".to_vec(), Bencode::Bytes(b"c".to_vec()));
+        let val = Bencode::Dict(map);
+        let encoded = val.encode();
+        // Keys sorted alphabetically: a, b
+        assert_eq!(encoded, b"d1:ai1e1:b1:ce");
+
+        let mut pos = 0;
+        let decoded = decode(&encoded, &mut pos).unwrap();
+        assert_eq!(decoded, val);
+    }
+
+    #[test]
+    fn test_decode_invalid() {
+        let mut pos = 0;
+        assert!(decode(b"i42", &mut pos).is_err()); // Missing 'e'
     }
 }

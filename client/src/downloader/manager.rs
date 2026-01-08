@@ -13,6 +13,18 @@ use super::state::{Downloader, PieceStatus};
 use crate::dht::Dht;
 use crate::peer::{Message, PeerConnection};
 
+/// The main execution loop of the downloader.
+///
+/// This function:
+/// 1. Announces to the Tracker to get an initial list of peers.
+/// 2. Starts the DHT service to find more peers (for magnet support or redundancy).
+/// 3. Spawns tasks to connect to peers.
+/// 4. Manages the download loop: requesting pieces, verifying hashes, and writing to disk.
+/// 5. Uploads pieces to other interested peers (tit-for-tat).
+///
+/// # Arguments
+///
+/// * `downloader` - The shared downloader state.
 pub async fn run(downloader: &Downloader) {
     let mut tracker_urls = Vec::new();
     tracker_urls.push(downloader.torrent.announce.clone());
@@ -26,6 +38,7 @@ pub async fn run(downloader: &Downloader) {
         }
     }
 
+    // Build the initial tracker request
     let request = TrackerRequest {
         info_hash: downloader.torrent.info_hash,
         peer_id: downloader.peer_id,
@@ -44,7 +57,7 @@ pub async fn run(downloader: &Downloader) {
 
     let (peer_tx, mut peer_rx) = mpsc::channel(100);
 
-    // Tracker Discovery
+    // --- Task: Tracker Discovery ---
     let tracker_tx = peer_tx.clone();
     let request_clone = request.clone();
     let tracker_urls_clone = tracker_urls.clone();
@@ -53,6 +66,7 @@ pub async fn run(downloader: &Downloader) {
             println!("Contacting tracker: {}", url);
             let url_clone = url.clone();
             let req_clone = request_clone.clone();
+            // Tracker requests are blocking HTTP/UDP calls
             let res = tokio::task::spawn_blocking(move || {
                 if let Some(client) = get_tracker_client(&url_clone) {
                     client.announce(&req_clone).ok()
@@ -76,7 +90,7 @@ pub async fn run(downloader: &Downloader) {
         }
     });
 
-    // DHT Discovery
+    // --- Task: DHT Discovery ---
     let dht_tx = peer_tx.clone();
     let info_hash = downloader.torrent.info_hash;
     tokio::spawn(async move {
@@ -87,6 +101,7 @@ pub async fn run(downloader: &Downloader) {
                 dht.bootstrap().await;
 
                 loop {
+                    // Regularly query DHT for peers
                     dht.get_peers(info_hash).await;
                     let peers = dht.get_found_peers().await;
                     if !peers.is_empty() {
@@ -102,16 +117,22 @@ pub async fn run(downloader: &Downloader) {
         }
     });
 
+    // --- Main Peer Management Loop ---
     let mut handles = Vec::new();
     let (tx, _) = broadcast::channel(1);
     let mut completion_rx = tx.subscribe();
+    
+    // Limits
     let upload_limiter = Arc::new(Mutex::new(TokenBucket::new(2_000_000.0, 2_000_000.0))); // 2 MB/s
     let uploaded_total = downloader.uploaded_bytes.clone();
     let downloaded_total = downloader.downloaded_bytes.clone();
+    // Max 50 active peer connections
     let semaphore = Arc::new(Semaphore::new(50));
     let connected_peers = Arc::new(Mutex::new(std::collections::HashSet::new()));
 
     loop {
+        // Wait for a new peer or completion of existing tasks
+        // Note: For simplicity, we just loop on receiving peers mostly.
         tokio::select! {
             res = peer_rx.recv() => {
                 if let Some(peer_addr) = res {
@@ -137,7 +158,9 @@ pub async fn run(downloader: &Downloader) {
                     let total_length = downloader.total_length;
                     let piece_count = torrent.pieces.len();
 
+                    // Spawn a task for each peer connection
                     handles.push(tokio::spawn(async move {
+                        // Rate limit active connections
                         let _permit = semaphore.acquire_owned().await.unwrap();
                         println!("Connecting to {}", peer_addr);
 
@@ -152,6 +175,7 @@ pub async fn run(downloader: &Downloader) {
                             };
                         println!("Connected to {}", peer_addr);
 
+                        // 1. Send Bitfield (if we have pieces)
                         {
                             let status = piece_status.lock().await;
                             if status.iter().any(|&s| s == PieceStatus::Have) {
@@ -170,12 +194,13 @@ pub async fn run(downloader: &Downloader) {
                             }
                         }
 
+                        // 2. Send Interested
                         if let Err(e) = peer.send_message(Message::Interested).await {
                             eprintln!("Error sending interested to {}: {}", peer_addr, e);
                             return;
                         }
 
-                        // Send Extended Handshake
+                        // 3. Send Extended Handshake (PEX support)
                         let mut m = BTreeMap::new();
                         m.insert(b"ut_pex".to_vec(), Bencode::Int(1));
                         let mut handshake = BTreeMap::new();
@@ -199,6 +224,7 @@ pub async fn run(downloader: &Downloader) {
                                         Ok(m) => m,
                                         Err(e) => {
                                             eprintln!("Error reading from {}: {}", peer_addr, e);
+                                            // Make sure to reset status if we crash middle of a piece
                                             if let Some(idx) = current_piece_idx {
                                                 let mut status = piece_status.lock().await;
                                                 if status[idx] == PieceStatus::InProgress {
@@ -210,6 +236,7 @@ pub async fn run(downloader: &Downloader) {
                                     }
                                 }
                                 _ = rx.recv() => {
+                                    // Broadcast received to stop/cancel
                                     break;
                                 }
                             };
@@ -219,6 +246,7 @@ pub async fn run(downloader: &Downloader) {
                                     println!("{} unchoked us", peer_addr);
                                 }
                                 Message::Request { index, begin, length } => {
+                                    // Handle upload request
                                     if length > 128 * 1024 {
                                         eprintln!("Requested block too large: {}", length);
                                         continue;
@@ -227,7 +255,8 @@ pub async fn run(downloader: &Downloader) {
                                     let status = piece_status.lock().await;
                                     if status.get(index as usize).map(|&s| s == PieceStatus::Have).unwrap_or(false) {
                                         drop(status);
-
+                                        
+                                        // Global Upload Rate Limiting
                                         let mut bucket = upload_limiter.lock().await;
                                         while !bucket.consume(length as f64) {
                                             drop(bucket);
@@ -264,7 +293,7 @@ pub async fn run(downloader: &Downloader) {
                                     }
                                 }
                                 Message::Cancel { .. } => {
-                                    // TODO: Implement cancel
+                                    // TODO: Implement cancel strategy if we queue requests
                                 }
                                 Message::Piece {
                                     index,
@@ -280,12 +309,14 @@ pub async fn run(downloader: &Downloader) {
                                                 blocks_received += 1;
 
                                                 if blocks_received == blocks_total {
+                                                    // Piece Complete, Verify Hash
                                                     let mut hasher = Sha1::new();
                                                     hasher.update(&current_piece_data);
                                                     let hash = hasher.finalize();
 
                                                     if hash.as_slice() == &torrent.pieces[curr] {
                                                         println!("Piece {} verified from {}!", curr, peer_addr);
+                                                        // Write to disk
                                                         let mut f = file.lock().await;
                                                         let offset = curr as u64 * torrent.piece_length;
                                                         if let Err(e) = f.seek(SeekFrom::Start(offset)).await {
@@ -295,6 +326,10 @@ pub async fn run(downloader: &Downloader) {
                                                         if let Err(e) = f.write_all(&current_piece_data).await {
                                                             eprintln!("Write error: {}", e);
                                                             break;
+                                                        }
+                                                        // Don't forget to sync!
+                                                        if let Err(e) = f.sync_all().await {
+                                                            eprintln!("Sync error: {}", e);
                                                         }
 
                                                         let mut status = piece_status.lock().await;

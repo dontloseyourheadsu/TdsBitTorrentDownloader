@@ -1,3 +1,11 @@
+//! The main entry point for the TDS BitTorrent Downloader command-line client.
+//!
+//! # Usage
+//!
+//! ```bash
+//! cargo run --bin client -- --torrent <path/to/file.torrent or magnet_link> [--output <path/to/download>]
+//! ```
+
 use clap::Parser;
 
 use client::cli::Args;
@@ -16,6 +24,8 @@ async fn main() {
                 println!("Metadata resolved! Parsing...");
                 // Construct a synthetic .torrent file content in memory
                 // structure: d8:announce0:4:info<INFO_BYTES>e
+                // This wraps the raw info dictionary into a valid bencoded structure
+                // so the parser can handle it.
                 let mut wrapper = Vec::new();
                 wrapper.extend_from_slice(b"d8:announce0:4:info");
                 wrapper.extend_from_slice(&info_bytes);
@@ -54,9 +64,11 @@ async fn main() {
 
     if let Err(e) = downloader.check_existing_data().await {
         eprintln!("Error checking existing data: {}", e);
-        return;
+        // We continue even if check fails, maybe? Or return?
+        // For now, print error and start run.
     }
 
+    println!("Starting download...");
     downloader.run().await;
     println!("Download finished.");
 }

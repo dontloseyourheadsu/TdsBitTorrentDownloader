@@ -8,6 +8,28 @@ use tds_core::bencoding::{Bencode, decode};
 use tokio::sync::mpsc;
 use url::Url;
 
+/// Resolves a magnet link to the raw bytes of the info dictionary (metadata).
+///
+/// This process involves:
+/// 1. Parsing the magnet link to get the info hash and initial trackers.
+/// 2. Starting the DHT node to find peers associated with the info hash.
+/// 3. Connecting to discovered peers.
+/// 4. Using the BitTorrent Extension Protocol (BEP 10) to request the metadata (ut_metadata).
+///
+/// # Arguments
+///
+/// * `magnet_link` - A string containing the magnet URI.
+///
+/// # Returns
+///
+/// * `Result<Vec<u8>, ...>` - The raw bytes of the info dictionary if successful, or an error.
+///
+/// # Errors
+///
+/// Returns error if:
+/// * Magnet link is invalid.
+/// * DHT fails to start.
+/// * Timeout occurs finding peers or metadata (current timeout 60s).
 pub async fn resolve(
     magnet_link: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
@@ -87,6 +109,13 @@ pub async fn resolve(
     }
 }
 
+/// Attempts to fetch metadata from a single peer using the extension protocol (ut_metadata).
+///
+/// # Arguments
+///
+/// * `peer` - The address of the peer to connect to.
+/// * `info_hash` - The target info hash.
+/// * `tx` - A channel sender to report success.
 async fn attempt_metadata_fetch(
     peer: SocketAddrV4,
     info_hash: [u8; 20],
@@ -242,6 +271,17 @@ async fn attempt_metadata_fetch(
     }
 }
 
+/// Parses a magnet URI scheme.
+///
+/// Supports standard `magnet:?xt=urn:btih:<hex_hash>` format.
+///
+/// # Arguments
+///
+/// * `uri` - The magnet link string.
+///
+/// # Returns
+///
+/// * `Result<([u8; 20], Vec<String>), ...>` - A tuple containing the 20-byte info hash and a list of tracker URLs.
 fn parse_magnet_link(
     uri: &str,
 ) -> Result<([u8; 20], Vec<String>), Box<dyn std::error::Error + Send + Sync>> {
@@ -274,5 +314,54 @@ fn parse_magnet_link(
         Ok((h, trackers))
     } else {
         Err("Missing info hash".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_magnet_link_valid_hex() {
+        let uri = "magnet:?xt=urn:btih:5b635ca35e4d2847a83709033333333333333333&tr=http://tracker.com";
+        let res = parse_magnet_link(uri);
+        assert!(res.is_ok());
+        let (hash, trackers) = res.unwrap();
+        assert_eq!(hex::encode(hash), "5b635ca35e4d2847a83709033333333333333333");
+        assert_eq!(trackers.len(), 1);
+        assert_eq!(trackers[0], "http://tracker.com");
+    }
+
+    #[test]
+    fn test_parse_magnet_link_multiple_trackers() {
+        let uri = "magnet:?xt=urn:btih:5b635ca35e4d2847a83709033333333333333333&tr=http://t1.com&tr=http://t2.com";
+        let res = parse_magnet_link(uri);
+        assert!(res.is_ok());
+        let (_, trackers) = res.unwrap();
+        assert_eq!(trackers.len(), 2);
+        assert_eq!(trackers[0], "http://t1.com");
+        assert_eq!(trackers[1], "http://t2.com");
+    }
+
+    #[test]
+    fn test_parse_magnet_link_invalid_scheme() {
+        assert!(parse_magnet_link("http://google.com").is_err());
+    }
+
+    #[test]
+    fn test_parse_magnet_link_missing_xt() {
+        assert!(parse_magnet_link("magnet:?tr=http://tracker.com").is_err());
+    }
+    
+    #[test]
+    fn test_parse_magnet_link_invalid_hex_len() {
+        // Too short
+        let uri = "magnet:?xt=urn:btih:12345&tr=http://tracker.com";
+        assert!(parse_magnet_link(uri).is_ok() == false); // Should just fail to find hash or error
+        // Actually code checks for len==40. If len != 40 and != 32, it falls through loops and returns Missing info hash
+        match parse_magnet_link(uri) {
+             Err(e) => assert_eq!(e.to_string(), "Missing info hash"),
+             Ok(_) => panic!("Should have failed"),
+        }
     }
 }
