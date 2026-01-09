@@ -1,232 +1,221 @@
-Below is a **practical, high-level roadmap** for building a BitTorrent **downloader client** (not a tracker). This focuses on how the protocol works and how to implement it step by step.
+# TDS BitTorrent Ecosystem
 
-> ⚠️ **Legal note**: BitTorrent is a neutral technology. Make sure you only download/share content you have the legal right to distribute.
+A robust, high-performance BitTorrent implementation tailored for learning and extendability. The ecosystem allows you to not only download files using the standard protocol but also host your own tracker server to coordinate peer discovery.
 
----
-
-## 1. Learn the BitTorrent Architecture
-
-Before coding, understand the roles:
-
-* **Torrent file (`.torrent`)** – metadata (piece hashes, trackers, file info)
-* **Tracker** – tells you which peers have the file
-* **Peer** – another client sharing pieces
-* **Swarm** – all peers sharing the same torrent
-* **Pieces / blocks** – files are split into fixed-size chunks
-
-Key concepts:
-
-* SHA-1 hashes for integrity
-* Peer-to-peer piece exchange
-* Tit-for-tat (upload to download)
+This project is written in **Rust** to enforce memory safety and leverage async concurrency for network operations. It features both Command Line Interfaces (CLI) for headless operations and modern Desktop GUIs built with **Tauri**.
 
 ---
 
-## 2. Choose Your Language & Tools
+## Core Concepts
 
-Good beginner-friendly choices:
+If you are new to the BitTorrent protocol, here is a brief overview of the concepts implemented in this project:
 
-* **Python** – easiest to prototype
-* **Go** – excellent networking support
-* **Rust** – performance + safety
-* **JavaScript (Node.js)** – async networking
+### 1. The Torrent Metadata
 
-You’ll need:
+A `.torrent` file contains metadata about the files to be shared (names, sizes, folder structure) and the **integrity hashes** of each piece of data. It serves as a blueprint for the download.
 
-* TCP & UDP sockets
-* Binary encoding/decoding
-* Hashing (SHA-1)
-* Async/concurrent I/O
+- **Info Hash**: A unique SHA-1 identifier calculated from the metadata. This hash allows peers to verify they are talking about the same content.
+- **Bencoding**: A binary-text encoding format used by BitTorrent to serialize complex data structures (dictionaries, lists, integers, byte strings).
 
----
+### 2. The Tracker (Signaling Server)
 
-## 3. Parse the `.torrent` File
+The **Tracker** is a special HTTP or UDP server that coordinates communication. It does **not** transfer file data.
 
-Torrent files use **bencoding**.
+- **Role**: It acts as an introducer. Peers "announce" their presence to the tracker.
+- **Swarm**: The tracker maintains a list of all peers currently sharing a specific torrent (the "swarm").
+- **Response**: When a client requests peers, the tracker returns a list of IP addresses and ports of other clients in the swarm.
 
-You must extract:
+### 3. The Client (Peer)
 
-* `announce` (tracker URL)
-* `info` dictionary
+The **Client** is the software that downloads and uploads data.
 
-  * file names
-  * file sizes
-  * piece length
-  * piece hashes
+- **Leecher**: A client that is currently downloading the file.
+- **Seeder**: A client that has the complete file and is uploading it to others.
+- **Peer Wire Protocol**: Clients connect directly to each other via TCP to exchange data pieces using a requested-based mechanism (Choke/Unchoke, Interested/Not Interested).
 
-Important:
+### 4. Distributed Hash Table (DHT) & Magnet Links
 
-* Compute **info_hash** = SHA-1 hash of the raw `info` dictionary
-* This hash uniquely identifies the torrent
+**Magnet Links** allow downloading without a `.torrent` file. They contain only the **Info Hash**.
+
+- The client uses the **DHT** (a decentralized network of peers) to find other peers who have the metadata for that Info Hash.
+- Once the metadata is retrieved from the swarm, the regular download begins.
 
 ---
 
-## 4. Contact the Tracker
+## Project Structure
 
-Trackers tell you who else is sharing the file.
+The workspace is organized into modular components to separate concern and maximize reusability:
 
-### HTTP Tracker
-
-Send a GET request with:
-
-* `info_hash`
-* `peer_id` (random 20-byte ID)
-* `port`
-* `uploaded`, `downloaded`, `left`
-* `event=started`
-
-Receive:
-
-* List of peers (IP + port)
-* Interval for next announce
-
-### UDP Tracker (optional but common)
-
-* Faster and more complex
-* Requires connection + announce packets
+- **`tds_core`**: The foundational library. It handles:
+  - Bencoding (parsing and generating BitTorrent data structures).
+  - SHA-1 hashing and info-hash generation.
+  - `.torrent` file parsing and validation.
+  - Rate limiting logic (Token Bucket algorithm).
+- **`client`**: The reference BitTorrent downloader implementation.
+  - Handles the TCP Peer Wire Protocol (Handshake, Choke/Unchoke, Piece requests).
+  - Manages file storage and piece assembly.
+  - Supports Magnet links via DHT (Distributed Hash Table) bootstrap.
+- **`tracker`**: A lightweight BitTorrent Tracker server.
+  - Supports HTTP and UDP announce protocols.
+  - Maintains an in-memory database of active swarms and peers.
+  - Handles peer expiration and cleanup.
+- **`tauri-ui`**: A cross-platform desktop GUI for the Client.
+  - Visualizes download progress, speed, and peer connections.
+- **`tracker-ui`**: A desktop GUI for the Tracker Server.
+  - Provides a control panel to start/stop the server and view active logs.
 
 ---
 
-## 5. Connect to Peers
+## System Architecture
 
-For each peer:
+### 1. Client Architecture
 
-1. Open a TCP connection
-2. Perform the **BitTorrent handshake**
+The client operates as an asynchronous event loop, coordinating network I/O with disk operations.
 
-   * Protocol string
-   * `info_hash`
-   * `peer_id`
-3. Validate that the peer supports your torrent
+```mermaid
+graph TD
+    subgraph Core Logic
+        Parser[Torrent Parser] --> |MetaInfo| Manager[Download Manager]
+        Rate[Rate Limiter] -.-> PeerWorker
+    end
 
-If handshake fails → disconnect.
+    subgraph User Interface
+        CLI[CLI Args] --> Manager
+        GUI[Tauri Frontend] --> |Commands| Manager
+    end
 
----
+    subgraph Network
+        Manager --> |Coordinator| Swarm
+        Swarm --> |Spawn| PeerWorker[Peer Connection]
+        PeerWorker <--> |Handshake/Bitfield/Piece| RemotePeer[Remote Peer]
+        PeerWorker --> |Get Peers| TrackerClient
+        TrackerClient <--> |Announce| RemoteTracker[External Tracker]
+    end
 
-## 6. Implement the Peer Messaging Protocol
+    subgraph Storage
+        PeerWorker --> |Write Block| DiskIO[Storage Manager]
+        DiskIO --> |Read/Write| FileSystem[(Disk)]
+    end
+```
 
-You must support these messages:
+### 2. Tracker Architecture
 
-Mandatory:
+The tracker acts as a centralized signaling server, storing peer information to help clients find each other.
 
-* `choke` / `unchoke`
-* `interested` / `not interested`
-* `have`
-* `bitfield`
-* `request`
-* `piece`
+```mermaid
+graph LR
+    subgraph Interfaces
+        HTTP[HTTP Handler]
+        UDP[UDP Handler]
+    end
 
-Flow:
+    subgraph State Management
+        Store["Peer Store (In-Memory DB)"]
+        Cleaner[Cleanup Task]
+    end
 
-1. Receive peer’s bitfield (what pieces they have)
-2. Send `interested`
-3. Wait for `unchoke`
-4. Request blocks of pieces
-5. Receive data
+    ExternalClient[BitTorrent Client] --> |GET /announce| HTTP
+    ExternalClient --> |UDP Packet| UDP
 
----
+    HTTP --> |Update| Store
+    UDP --> |Update| Store
 
-## 7. Download Pieces & Verify Integrity
-
-* Download pieces in **blocks** (typically 16KB)
-* Reassemble blocks into full pieces
-* Verify each piece using SHA-1 hash from torrent metadata
-* If hash fails → discard and re-download
-
----
-
-## 8. Manage Piece Selection Strategy
-
-Basic strategies:
-
-* **Random first piece** (bootstrap)
-* **Rarest-first** (preferred)
-* **Endgame mode** (request remaining blocks from multiple peers)
-
-Keep track of:
-
-* Which pieces you have
-* Which peers have which pieces
+    Cleaner -.-> |Remove Stale Peers| Store
+```
 
 ---
 
-## 9. Write Data to Disk
+## Getting Started: CLI
 
-* Support:
+Ensure you have Rust and Cargo installed via [rustup.rs](https://rustup.rs/).
 
-  * Single-file torrents
-  * Multi-file torrents
-* Pre-allocate files if possible
-* Write pieces at correct offsets
+### Running the Downloader (Headless)
 
----
+The CLI client supports both `.torrent` files and Magnet links.
 
-## 10. Upload Pieces (Seeding)
+```bash
+# Basic usage with a torrent file
+cargo run -p client -- --torrent path/to/file.torrent --output ./downloads
 
-To be a valid client:
+# Handling a Magnet link
+cargo run -p client -- --torrent "magnet:?xt=urn:btih:..."
+```
 
-* Respond to incoming `request` messages
-* Upload pieces you already have
-* Track upload/download stats
+### Running the Tracker (Headless)
 
----
+The tracker runs by default on port `6969`.
 
-## 11. Handle Concurrency & Performance
-
-Important improvements:
-
-* Multiple peer connections
-* Async I/O
-* Timeouts & retries
-* Drop slow or malicious peers
+```bash
+# Start the tracker server
+cargo run -p tracker
+```
 
 ---
 
-## 12. Add Nice-to-Have Features
+## Getting Started: Graphical User Interface
 
-Once basic downloading works:
+The project includes modern interfaces for users who prefer visual management. Since these are Tauri apps, you need `Node.js` and `npm` installed (for the frontend) and Rust (for the backend).
 
-* Resume partial downloads
-* DHT (trackerless torrents)
-* Peer Exchange (PEX)
-* Magnet links
-* Rate limiting
-* UI (CLI or GUI)
+### 1. TDS Client UI
 
----
+The client UI serves as the control center for your downloads. It allows you to paste magnet links, view pieces as they are downloaded, and monitor your connection speed.
 
-## 13. Test with Known Torrents
+**Prerequisites:**
 
-* Use **Linux ISO torrents**
-* Compare piece hashes
-* Verify interoperability with other clients
+- Install frontend dependencies: `cd tauri-ui && npm install`
 
----
+**Running Development Mode:**
 
-## Recommended Learning Resources
+```bash
+cd tauri-ui
+npm run tauri dev
+```
 
-* BitTorrent Protocol Specification (BEPs)
-* “Build Your Own BitTorrent Client” blogs
-* Open-source clients:
+![TDS Client UI](readme_imgs/tds-client-req-magnet.png)
 
-  * Transmission
-  * libtorrent
-  * aria2
+### 2. TDS Tracker UI
 
----
+The tracker UI provides a dashboard for server administrators. It allows you to toggle the server on/off, change the port, and view live logs of peers connecting to your tracker.
 
-## Minimal Learning Order (If You’re New)
+**Prerequisites:**
 
-1. TCP sockets
-2. Binary protocols
-3. Hashing & file I/O
-4. Async programming
-5. BitTorrent protocol
+- Install frontend dependencies: `cd tracker-ui && npm install`
+
+**Running Development Mode:**
+
+```bash
+cd tracker-ui
+npm run tauri dev
+```
+
+![TDS Tracker UI](readme_imgs/tds-tracker-start-tcp.png)
 
 ---
 
-If you want, I can:
+## Contributing
 
-* Break this into **code-level steps**
-* Help you implement **a minimal Python client**
-* Explain **one part (tracker, peer protocol, hashing)** in depth
+We welcome contributions! The project is structured to allow independent development of the core logic, backend servers, and frontends.
+
+### Directory Layout
+
+- **Logic**: `/tds_core` - If you want to improve bencoding performance or parsing logic, work here.
+- **Backend**: `/client` and `/tracker` - If you want to improve network protocols or connection handling.
+- **Frontend**: `/tauri-ui` and `/tracker-ui` - If you want to improve the look and feel (React/Vite).
+
+### Testing Your Changes
+
+Before submitting a PR, please ensure all tests pass. We use a workspace-wide test command:
+
+```bash
+# Run all unit tests across the workspace
+cargo test --workspace
+```
+
+### Async Development
+
+This project relies heavily on `tokio` for asynchronous runtime.
+
+- **UI State**: When working on UIs, we use `tauri::State` with `tokio::sync::Mutex` to manage shared resources (like the `Downloader` or `TrackerServer`). Never block the main thread!
+- **Channels**: We use `tokio::sync::mpsc` for communication between the UI thread and the download workers.
+
+Happy Coding!
