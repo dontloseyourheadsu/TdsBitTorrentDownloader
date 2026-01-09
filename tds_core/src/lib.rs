@@ -71,7 +71,7 @@ pub fn parse_torrent_from_bytes(buf: &[u8]) -> io::Result<Torrent> {
     if let Bencode::Dict(ref dict) = root {
         let announce = match dict.get(&b"announce"[..]) {
             Some(Bencode::Bytes(bytes)) => String::from_utf8_lossy(bytes).to_string(),
-            _ => String::new(), 
+            _ => String::new(),
         };
 
         let announce_list = if let Some(Bencode::List(list)) = dict.get(&b"announce-list"[..]) {
@@ -197,7 +197,6 @@ pub fn parse_torrent_from_bytes(buf: &[u8]) -> io::Result<Torrent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     fn create_dummy_torrent() -> Vec<u8> {
         // Hand-craft a simple single-file torrent structure
@@ -206,6 +205,14 @@ mod tests {
         // announce: http://track.er (15 chars)
         let mut t = "d8:announce15:http://track.er4:infod6:lengthi12345e4:name8:testfile12:piece lengthi16384e6:pieces20:".as_bytes().to_vec();
         t.extend_from_slice(&[b'X'; 20]); // dummy hash
+        t.extend_from_slice(b"ee");
+        t
+    }
+
+    fn create_dummy_multifile_torrent() -> Vec<u8> {
+        // d8:announce15:http://track.er4:infod5:filesld6:lengthi1000e4:pathl5:fileAeed6:lengthi2000e4:pathl3:sub5:fileBeeee4:name7:testdir12:piece lengthi16384e6:pieces20:....................ee
+        let mut t = "d8:announce15:http://track.er4:infod5:filesld6:lengthi1000e4:pathl5:fileAeed6:lengthi2000e4:pathl3:sub5:fileBeeee4:name7:testdir12:piece lengthi16384e6:pieces20:".as_bytes().to_vec();
+        t.extend_from_slice(&[b'X'; 20]);
         t.extend_from_slice(b"ee");
         t
     }
@@ -220,6 +227,24 @@ mod tests {
         assert_eq!(t.piece_length, 16384);
         assert_eq!(t.pieces.len(), 1);
         assert!(t.files.is_none());
+    }
+
+    #[test]
+    fn test_parse_multifile_torrent() {
+        let buf = create_dummy_multifile_torrent();
+        let t = parse_torrent_from_bytes(&buf).expect("Should parse");
+        assert_eq!(t.name, "testdir");
+        assert!(t.length.is_none());
+        assert!(t.files.is_some());
+
+        let files = t.files.unwrap();
+        assert_eq!(files.len(), 2);
+
+        assert_eq!(files[0].length, 1000);
+        assert_eq!(files[0].path, vec!["fileA"]);
+
+        assert_eq!(files[1].length, 2000);
+        assert_eq!(files[1].path, vec!["sub", "fileB"]);
     }
 
     #[test]
